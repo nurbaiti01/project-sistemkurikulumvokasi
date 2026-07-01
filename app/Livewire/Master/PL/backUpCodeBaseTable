@@ -1,0 +1,257 @@
+<?php
+
+namespace App\Livewire\Base;
+
+use Livewire\Component;
+use Livewire\WithPagination;
+use Livewire\Attributes\On;
+use WireUi\Traits\WireUiActions;
+use Illuminate\Database\Eloquent\Builder;
+use App\BaseQuery;
+/**
+ * BaseTable — Parent class untuk semua Livewire Table CRUD
+ * --------------------------------------------------------
+ * Child class WAJIB override:
+ *  - query()                  → source query tabel (Builder)
+ *  - getFormDataProperty()    → data form saat openCreate / openEdit
+ *  - view()                   → lokasi blade view
+ *
+ * Fitur yang disediakan:
+ *  ✔ Pagination
+ *  ✔ Search
+ *  ✔ Sort (whitelisted)
+ *  ✔ Filter (dynamic key:value)
+ *  ✔ Toggle show table/create/update
+ *  ✔ Dialog delete (WireUI)
+ *  ✔ Event Listener (cancel, success-created, success-updated)
+ */
+abstract class BaseTable extends Component
+{
+    use WithPagination, WireUiActions, BaseQuery;
+
+    /**
+     * CHILD WAJIB set Model:
+     * ex: protected static string $model = User::class;
+     */
+    protected static string $model;
+
+    /* ------------ UI State ------------ */
+    protected static string $view;
+    public bool $showTable = true;
+    public bool $showCreate = false;
+    public bool $showUpdate = false;
+
+    /* ------------ Data State ------------ */
+    public ?int $selectedId = null;
+    public ?int $activeProdi = null;
+    public array $filter = [];
+
+
+
+    /* ------------ Search, Sort & Pagination ------------ */
+    public string $search = '';
+    public string $sortBy = 'id';
+    public string $sortDirection = 'desc';
+    public int $perPage = 10;
+    protected array $allowedSorts = ['id', 'created_at'];
+    protected array $allowedDirections = ['asc', 'desc'];
+
+    /* ------------ Query Config (override optional di child) ------------ */
+    protected array $searchable = [];
+    protected array $filterable = [];
+    protected string $prodiColumn = 'prodi_id';
+
+    /* ------------ Page Info ------------ */
+    public string $title = 'Page Title';
+
+
+    /**
+     * Lifecycle Mount — dijalankan pertama kali Livewire di-render
+     */
+    public function mount(): void
+    {
+        $this->setFilterProdi();
+    }
+
+    /**
+     * Set default filter untuk Prodi (anak wajib override jika butuh)
+     */
+    protected function setFilterProdi(): void
+    {
+
+    }
+
+    /**
+     * ---- DEFAULT QUERY ----
+     * Jika child TIDAK override query(), maka dipakai otomatis
+     */
+    protected function baseModelQuery(): Builder
+    {
+        return static::$model::query();
+    }
+
+    /**
+     * CHILD WAJIB override → Query utama tabel
+     * @return Builder
+     */
+    abstract protected function query(): Builder;
+
+    /**
+     * ---- UNIFIED QUERY HANDLER ----
+     * Teknis:
+     * - Jika child override query() → pakai itu
+     * - Jika tidak → fallback ke baseModelQuery()
+     */
+    protected function finalQuery(): Builder
+    {
+        $builder = method_exists($this, 'query')
+            ? $this->query()
+            : $this->baseModelQuery();
+
+        return $this->autoQuery(
+            builder: $builder,
+            searchble: $this->searchable,
+            filterable: $this->filterable,
+            prodiColumn: $this->prodiColumn
+        );
+    }
+
+    /**
+     * CHILD WAJIB override:
+     * Data yang dikirim ke create/edit form
+     */
+    abstract public function getFormDataProperty(): array;
+
+    /**
+     * Buka form Create
+     */
+    public function openCreate(): void
+    {
+        $this->resetSelected();
+        $this->showCreate = true;
+        $this->showTable = false;
+    }
+
+    /**
+     * Buka form Edit berdasarkan ID
+     */
+    public function openEdit(int $id): void
+    {
+        $this->selectedId = $id;
+        $this->showUpdate = true;
+        $this->showTable = false;
+    }
+
+    /**
+     * Tampilkan dialog konfirmasi sebelum delete
+     */
+    public function openDelete(int $id): void
+    {
+        $this->selectedId = $id;
+
+        $this->dialog()->confirm([
+            'title' => 'Are you sure?',
+            'description' => 'Data akan dihapus permanen.',
+            'acceptLabel' => 'Yes, Delete it!',
+            'method' => 'confirmDelete',
+        ]);
+    }
+
+    /**
+     * Listener — auto kembalikan ke table setelah event Create/Update/Cancel
+     */
+    #[On('cancel'), On('success-created'), On('success-updated')]
+    public function cancelForm(): void
+    {
+        $this->showCreate = false;
+        $this->showUpdate = false;
+        $this->showTable = true;
+
+        $this->resetPages();
+        $this->afterCancel();
+    }
+
+    /**
+     * Hook setelah cancel — child boleh override
+     */
+    protected function afterCancel(): void
+    {
+        // optional override — default do nothing
+    }
+
+    /**
+     * Reset selected row
+     */
+    protected function resetSelected(): void
+    {
+        $this->selectedId = null;
+    }
+
+    /**
+     * Auto reset halaman saat search berubah
+     */
+    public function updatingSearch(): void
+    {
+        $this->resetPage();
+    }
+
+    /**
+     * Auto reset halaman saat filter berubah
+     */
+    public function updatingFilter(): void
+    {
+        $this->resetPage();
+    }
+
+    /**
+     * Reset pagination & state ketika kembali ke table
+     */
+    protected function resetPages(): void
+    {
+        $this->resetPage();
+        $this->resetSelected();
+        $this->reset();         // reset semua public property Livewire
+        $this->setFilterProdi();
+    }
+
+    /**
+     * Clear filter
+     */
+    public function clearFilter(): void
+    {
+        $this->filter = [];
+        $this->resetPage();
+    }
+
+    /**
+     * Clear search field
+     */
+    public function clearSearch(): void
+    {
+        $this->search = '';
+        $this->resetPage();
+    }
+
+    /**
+     * Helper untuk mengambil nilai filter aman
+     */
+    protected function filterValue(string $key, $default = null)
+    {
+        return $this->filter[$key] ?? $default;
+    }
+
+    /**
+     * Render Component
+     */
+    public function render()
+    {
+        return view(static::$view, [
+            'data' => $this->finalQuery()->paginate($this->perPage),
+        ]);
+    }
+
+    /**
+     * CHILD WAJIB override: lokasi Blade view
+     */
+    abstract protected function view(): string;
+}
